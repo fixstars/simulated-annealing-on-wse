@@ -1,0 +1,200 @@
+param memcpy_params: comptime_struct;
+param Num: i16;
+param max_iters: i16;
+param T: i16;
+param width: u16;
+param height: u16;
+param send_east_color: color;
+param recv_west_color: color;
+param send_south_color: color;
+param recv_north_color: color;
+param input_color: color;
+param recv_input_task_id: data_task_id;
+param init_task_id: data_task_id;
+param main_task_id: local_task_id;
+param x_reduce_task_id: local_task_id;
+param y_reduce_task_id: local_task_id;
+param exit_task_id: local_task_id;
+
+const memcpy_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+const layout_mod = @import_module("<layout>");
+
+const math = @import_module("<math>");
+const qubo_mod = @import_module("qubo.csl", .{ .Num = Num });
+
+// annealing params
+const inputs_len = Num * (Num + 1) / 2;
+var inputs: [inputs_len]f32;
+
+fn is_left_col() bool {
+    return (layout_mod.get_x_coord() == 0);
+}
+
+fn is_right_col() bool {
+    return (layout_mod.get_x_coord() == width - 1);
+}
+
+fn is_top_row() bool {
+    return (layout_mod.get_y_coord() == 0);
+}
+
+fn is_bottom_row() bool {
+    return (layout_mod.get_y_coord() == height - 1);
+}
+
+fn self_index() u32 {
+    return @as(u32, layout_mod.get_y_coord()) << 16 | @as(u32, layout_mod.get_x_coord());
+}
+
+// Work area for broadcasting data received from the host
+var buf = @zeros([1]f32);
+const buf_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{1} -> buf[i] });
+
+// Receiving process from host (task started only in upper left corner)
+task recv_input(data: f32) void {
+    @block(recv_input_task_id);
+    buf[0] = data;
+    const out_dsd = @get_dsd(fabout_dsd, .{
+        .fabric_color = input_color,
+        .extent = 1,
+        .output_queue = @get_output_queue(5),
+    });
+    // Sending data to all nodes including itself according to the routes setting of input_color
+    @fmovs(out_dsd, buf_dsd, .{
+        .async = true,
+        .unblock = recv_input_task_id
+    });
+}
+
+var num_recv:i16 = 0;
+task init(data: f32) void {
+    inputs[num_recv] = data;
+    num_recv += 1;
+    if (num_recv == inputs_len) {
+        // If all inputs are ready, start main_task
+        @activate(main_task_id);
+    }
+}
+
+// The pair of the lowest energy and its state is represented by a single array.
+// The elements from the first to the Num-th in best_s represent the state, while the (Num+1)-th element of best_s represents its energy.
+var best_s: [Num + 1]i32;
+var best_s2: [Num + 1]i32;
+var best_s_self_dsd  = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{Num + 1} -> best_s[i] });
+var best_s_other_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{Num + 1} -> best_s2[i] });
+
+fn start_x_reduce() void {
+    if (is_left_col()) {
+        // PE at the leftmost column has no work
+        const out_dsd = @get_dsd(fabout_dsd, .{
+            .fabric_color = send_east_color,
+            .extent = Num + 1,
+            .output_queue = @get_output_queue(2),
+        });
+        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+    } else {
+        // For all other the columns, x_reduce_task is invoked when reception is complete
+        const in_dsd  = @get_dsd(fabin_dsd, .{
+            .fabric_color = recv_west_color,
+            .extent = Num + 1,
+            .input_queue = @get_input_queue(1),
+        });
+        @mov32(best_s_other_dsd, in_dsd, .{ .async = true, .activate = x_reduce_task_id });
+    }
+}
+
+// When this task is invoked, inputs must have been received
+task main_task() void {
+    var qubo: qubo_mod.QUBO;
+    qubo_mod.rand.set_initial_state(self_index());
+
+    qubo_mod.setup(&qubo, &inputs);
+
+    const alpha :f32 = 1.0 - 0.04 / @as(f32, T);
+    const temp :f32 = math.abs(qubo_mod.energy(&qubo));
+
+    const min_energy = qubo_mod.anneal(&qubo, max_iters, temp, alpha, &best_s);
+
+    // Start of reduction in x direction
+    best_s[Num] = @bitcast(i32, min_energy);
+    start_x_reduce();
+}
+
+// Adopt the one with smaller energy among best_s and best_s2
+fn red() void {
+    const e0 = @bitcast(f32, best_s[Num]);
+    const e1 = @bitcast(f32, best_s2[Num]);
+    if (e1 < e0) {
+        @mov32(best_s_self_dsd, best_s_other_dsd);
+    }
+}
+
+fn start_y_reduce() void {
+    if (is_top_row()) {
+        // The topmost row is out of work
+        const out_dsd = @get_dsd(fabout_dsd, .{
+            .fabric_color = send_south_color,
+            .extent = Num + 1,
+            .output_queue = @get_output_queue(4),
+        });
+        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+    } else {
+        // For all other the rows, y_reduce_task is invoked when reception is complete
+        const in_dsd  = @get_dsd(fabin_dsd, .{
+            .fabric_color = recv_north_color,
+            .extent = Num + 1,
+            .input_queue = @get_input_queue(3),
+        });
+        @mov32(best_s_other_dsd, in_dsd, .{ .async = true, .activate = y_reduce_task_id });
+    }
+}
+
+// When this task is invoked, the data of the west neighbor must be in s2
+task x_reduce_task() void {
+    red();
+    if (is_right_col()) {
+        // After reduction in the x direction is completed, the nodes in the rightmost column start reduction in the y direction
+        start_y_reduce();
+    } else {
+        // Send to east neighbor node
+        const out_dsd = @get_dsd(fabout_dsd, .{
+            .fabric_color = send_east_color,
+            .extent = Num + 1,
+            .output_queue = @get_output_queue(2),
+        });
+        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+    }
+}
+
+// When this task is invoked, the data of the north neighbor must be in s2
+task y_reduce_task() void {
+    red();
+    if (is_bottom_row()) {
+        // Because reduction is completed here, send to host
+        const out_dsd = @get_dsd(fabout_dsd, .{
+            .fabric_color = memcpy_mod.MEMCPYD2H_1,
+            .extent = Num + 1,
+            .output_queue = @get_output_queue(4),
+        });
+        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+    } else {
+        // Send to south neighbor node
+        const out_dsd = @get_dsd(fabout_dsd, .{
+            .fabric_color = send_south_color,
+            .extent = Num + 1,
+            .output_queue = @get_output_queue(4),
+        });
+        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+    }
+}
+
+comptime {
+    @bind_data_task(recv_input, recv_input_task_id);
+    @bind_data_task(init, init_task_id);
+    @bind_local_task(main_task, main_task_id);
+    @bind_local_task(x_reduce_task, x_reduce_task_id);
+    @bind_local_task(y_reduce_task, y_reduce_task_id);
+
+    // Create RPC server using color LAUNCH
+    @rpc(@get_data_task_id(memcpy_mod.LAUNCH));
+}

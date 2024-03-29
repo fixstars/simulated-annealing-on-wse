@@ -1,0 +1,43 @@
+// xorshift32()
+var state: u32;
+
+fn set_initial_state(s: u32) void {
+    state = s;
+}
+
+fn xorshift32() u32 {
+    // Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs"
+    var x: u32 = state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    state = x;
+    return x;
+}
+
+fn rand_float_zero2one() f32 {
+    var rand: u32 = xorshift32();
+    var ret: f32 = 0.0;
+    var tmp: f32 = 1.0;
+    for (@range(u16, 32)) |i| {
+        tmp /= 2.0;
+        ret += tmp * @as(f32, rand & 1);
+        rand >>= 1;
+    }
+    return ret;
+}
+
+fn rand_dist(a: f32, b: f32) f32 {
+    const range: f32 = (b - a);
+    const raw: f32 = rand_float_zero2one();
+    var ret: f32 = range * raw;
+    ret += a;
+    return ret;
+}
+
+fn rand_int(a: i32, b: i32) i32 {
+    const range: u32 = @as(u32, b - a);
+    const rand: u32 = xorshift32();
+    const ret: u32 = rand % range;
+    return @as(i32, ret) + a;
+}

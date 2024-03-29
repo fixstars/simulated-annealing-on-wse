@@ -1,0 +1,76 @@
+param Num: i16;
+
+const math = @import_module("<math>");
+const rand = @import_module("rand.csl");
+
+const inputs_len = Num * (Num + 1) / 2;
+
+const QUBO = struct {
+    Q: [Num, Num]f32,
+    s: [Num + 1]i32,
+};
+
+fn setup(this: *QUBO, inputs: *const[inputs_len]f32) void {
+    for (@range(i32, Num)) |i| {
+        const v = rand.rand_int(0, 2);
+        this.*.s[i] = v;
+    }
+    var counter: i32 = 0;
+    for (@range(i32, Num)) |i| {
+        for (@range(i32, i, Num, 1)) |j| {
+            const v: f32 = inputs.*[counter];
+            this.*.Q[i, j] = v;
+            this.*.Q[j, i] = v;
+            counter += 1;
+        }
+    }
+}
+
+fn energy(this: *const QUBO) f32 {
+    var ene :f32 = 0.0;
+    for (@range(i32, Num)) |i| {
+        for (@range(i32, Num)) |j| {
+            if(i < j) {
+                ene += this.*.Q[i, j] * @as(f32, this.*.s[i] * this.*.s[j]);
+            }
+        }
+        ene += this.*.Q[i, i] * @as(f32, this.*.s[i]);
+    }
+    return ene;
+}
+
+fn flip(this: *QUBO, i: i32) void {
+    this.*.s[i] ^= 1;
+}
+
+fn flip_energy(this: *const QUBO, i: i32) f32 {
+    var ene: f32 = 0.0;
+    for (@range(i32, Num)) |j| {
+        if(j != i) {
+            ene += this.*.Q[i, j] * @as(f32, this.*.s[j]);
+        }
+    }
+    ene += this.*.Q[i, i];
+    return ene * (if (this.*.s[i]==0) 1.0 else -1.0);
+}
+
+fn anneal(this: *QUBO, max_iter:i32, t: f32, alpha: f32, best_s: *[Num + 1]i32) f32 {
+    var current_energy :f32 = energy(this);
+    var min_energy = current_energy;
+    best_s.* = this.*.s;
+    var t2 = t;
+    for (@range(i32, max_iter)) |i| {
+        t2 *= alpha;
+        var idx: i32 = rand.rand_int(0, Num);
+        var d :f32 = flip_energy(this, idx);
+        if (d<0.0 or math.exp(-d/t2) > rand.rand_dist(0.0, 1.0)) {
+            current_energy += d;
+            flip(this, idx);
+            if (current_energy < min_energy) {
+                min_energy = current_energy;
+                best_s.* = this.*.s;
+            }
+        }
+    }
+    return min_energy;
+}
