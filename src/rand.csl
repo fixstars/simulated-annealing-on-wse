@@ -17,14 +17,7 @@ fn xorshift32() u32 {
 
 fn rand_float_zero2one() f32 {
     var rand: u32 = xorshift32();
-    var ret: f32 = 0.0;
-    var tmp: f32 = 1.0;
-    for (@range(u16, 32)) |i| {
-        tmp /= 2.0;
-        ret += tmp * @as(f32, rand & 1);
-        rand >>= 1;
-    }
-    return ret;
+    return @bitcast(f32, rand & 0x007FFFFF | 0x3F800000) - 1.0;
 }
 
 fn rand_dist(a: f32, b: f32) f32 {

@@ -1,200 +1,270 @@
-param memcpy_params: comptime_struct;
-param Num: i16;
-param max_iters: i16;
+param Num: u16;
+param max_iters: u16;
 param T: i16;
 param width: u16;
 param height: u16;
-param send_east_color: color;
-param recv_west_color: color;
-param send_south_color: color;
-param recv_north_color: color;
-param input_color: color;
-param recv_input_task_id: data_task_id;
-param init_task_id: data_task_id;
-param main_task_id: local_task_id;
-param x_reduce_task_id: local_task_id;
-param y_reduce_task_id: local_task_id;
-param exit_task_id: local_task_id;
+param send_west: color;
+param recv_east: color;
+param send_north: color;
+param recv_south: color;
+param bcast_fp: color;
+param bcast_s_color: color;
+param bcast_df: color;
+param memcpy_params: comptime_struct;
+const x_sum_id = @get_local_task_id(9);
+const y_sum_id = @get_local_task_id(10);
+const bcast_s_id = @get_local_task_id(11);
+const main_task0_id = @get_local_task_id(12);
+const main_task1_id = @get_local_task_id(13);
 
 const memcpy_mod = @import_module("<memcpy/memcpy>", memcpy_params);
 const layout_mod = @import_module("<layout>");
-
 const math = @import_module("<math>");
-const qubo_mod = @import_module("qubo.csl", .{ .Num = Num });
+const rand = @import_module("rand.csl");
 
-// annealing params
-const inputs_len = Num * (Num + 1) / 2;
-var inputs: [inputs_len]f32;
+const N: u16 = Num / height;
+const M: u16 = Num / width;
+const Area = struct {
+    x: u16,
+    y: u16,
+    x_low: u32,
+    x_high: u32,
+    y_low: u32,
+    y_high: u32,
+    is_left_col: bool,
+    is_right_col: bool,
+    is_top_row: bool,
+    is_bottom_row: bool,
+};
+var area: Area;
+var Q: [N, M]f32;
+var s = @zeros([M]i32); // Begin from all 0
+var best_s = @zeros([M]i32);
+var flip_index: [1]u32;
+var flip_energy: [2]f32;
+var do_flip = @zeros([2]f32);
+var iter: u16 = 0;
+var current_energy: f32 = 0.0; // Begin from 0
+var min_energy = @zeros([1]f32);
+var tempeature: f32 = @as(f32, Num * Num);
+const cool_rate: f32 = 1.0 - 0.04 / @as(f32, T);
 
-fn is_left_col() bool {
-    return (layout_mod.get_x_coord() == 0);
-}
+// pointers
+var Q_ptr: [*]f32 = &Q;
+const best_s_ptr: [*]i32 = &best_s;
+const min_energy_ptr: [*]f32 = &min_energy;
 
-fn is_right_col() bool {
-    return (layout_mod.get_x_coord() == width - 1);
-}
-
-fn is_top_row() bool {
-    return (layout_mod.get_y_coord() == 0);
-}
-
-fn is_bottom_row() bool {
-    return (layout_mod.get_y_coord() == height - 1);
-}
-
-fn self_index() u32 {
-    return @as(u32, layout_mod.get_y_coord()) << 16 | @as(u32, layout_mod.get_x_coord());
-}
-
-// Work area for broadcasting data received from the host
-var buf = @zeros([1]f32);
-const buf_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{1} -> buf[i] });
-
-// Receiving process from host (task started only in upper left corner)
-task recv_input(data: f32) void {
-    @block(recv_input_task_id);
-    buf[0] = data;
-    const out_dsd = @get_dsd(fabout_dsd, .{
-        .fabric_color = input_color,
-        .extent = 1,
-        .output_queue = @get_output_queue(5),
+const energy_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{2} -> flip_energy[i] });
+// reduce x_sum result
+task y_sum() void {
+    if (!area.is_left_col) {
+        @activate(main_task1_id);
+        return;
+    }
+    comptime const in_dsd = @get_dsd(fabin_dsd, .{
+         .fabric_color = recv_south,
+         .extent = 2,
+         .input_queue = @get_input_queue(2)
     });
-    // Sending data to all nodes including itself according to the routes setting of input_color
-    @fmovs(out_dsd, buf_dsd, .{
-        .async = true,
-        .unblock = recv_input_task_id
+    comptime const out_dsd = @get_dsd(fabout_dsd, .{
+        .fabric_color = send_north,
+        .extent = 2,
+        .output_queue = @get_output_queue(1)
     });
-}
-
-var num_recv:i16 = 0;
-task init(data: f32) void {
-    inputs[num_recv] = data;
-    num_recv += 1;
-    if (num_recv == inputs_len) {
-        // If all inputs are ready, start main_task
-        @activate(main_task_id);
-    }
-}
-
-// The pair of the lowest energy and its state is represented by a single array.
-// The elements from the first to the Num-th in best_s represent the state, while the (Num+1)-th element of best_s represents its energy.
-var best_s: [Num + 1]i32;
-var best_s2: [Num + 1]i32;
-var best_s_self_dsd  = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{Num + 1} -> best_s[i] });
-var best_s_other_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{Num + 1} -> best_s2[i] });
-
-fn start_x_reduce() void {
-    if (is_left_col()) {
-        // PE at the leftmost column has no work
-        const out_dsd = @get_dsd(fabout_dsd, .{
-            .fabric_color = send_east_color,
-            .extent = Num + 1,
-            .output_queue = @get_output_queue(2),
-        });
-        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+    if (area.is_bottom_row) {
+        @fmovs(out_dsd, energy_dsd, .{ .async = true, .activate = main_task1_id });
+    } else if (!area.is_top_row) {
+        @fadds(out_dsd, energy_dsd, in_dsd, .{ .async = true, .activate = main_task1_id });
     } else {
-        // For all other the columns, x_reduce_task is invoked when reception is complete
-        const in_dsd  = @get_dsd(fabin_dsd, .{
-            .fabric_color = recv_west_color,
-            .extent = Num + 1,
-            .input_queue = @get_input_queue(1),
-        });
-        @mov32(best_s_other_dsd, in_dsd, .{ .async = true, .activate = x_reduce_task_id });
+        @fadds(energy_dsd, energy_dsd, in_dsd, .{ .async = true, .activate = main_task1_id });
     }
 }
 
-// When this task is invoked, inputs must have been received
-task main_task() void {
-    var qubo: qubo_mod.QUBO;
-    qubo_mod.rand.set_initial_state(self_index());
-
-    qubo_mod.setup(&qubo, &inputs);
-
-    const alpha :f32 = 1.0 - 0.04 / @as(f32, T);
-    const temp :f32 = math.abs(qubo_mod.energy(&qubo));
-
-    const min_energy = qubo_mod.anneal(&qubo, max_iters, temp, alpha, &best_s);
-
-    // Start of reduction in x direction
-    best_s[Num] = @bitcast(i32, min_energy);
-    start_x_reduce();
-}
-
-// Adopt the one with smaller energy among best_s and best_s2
-fn red() void {
-    const e0 = @bitcast(f32, best_s[Num]);
-    const e1 = @bitcast(f32, best_s2[Num]);
-    if (e1 < e0) {
-        @mov32(best_s_self_dsd, best_s_other_dsd);
+fn prepare_flip_energy() void {
+    const index = flip_index[0];
+    var e: f32 = 0.0;
+    var sign: i32 = 0;
+    if (area.y_low <= index and index < area.y_high) {
+        const i = index - area.y_low;
+        for(@range(u32, M)) |j| {
+            if (j + area.x_low == index) {
+                e += Q[i, j];
+                sign = s[j];
+            } else {
+                e += Q[i, j] * @as(f32, s[j]);
+            }
+        }
     }
+    flip_energy[0] = e;
+    flip_energy[1] = @bitcast(f32, sign);
 }
 
-fn start_y_reduce() void {
-    if (is_top_row()) {
-        // The topmost row is out of work
-        const out_dsd = @get_dsd(fabout_dsd, .{
-            .fabric_color = send_south_color,
-            .extent = Num + 1,
-            .output_queue = @get_output_queue(4),
-        });
-        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+// calc flip_energy on each row
+task x_sum() void {
+    prepare_flip_energy();
+    comptime const in_dsd = @get_dsd(fabin_dsd, .{
+         .fabric_color = recv_east,
+         .extent = 2,
+         .input_queue = @get_input_queue(4)
+    });
+    comptime const out_dsd = @get_dsd(fabout_dsd, .{
+        .fabric_color = send_west,
+        .extent = 2,
+        .output_queue = @get_output_queue(3)
+    });
+    if (area.is_right_col) {
+        @fmovs(out_dsd, energy_dsd, .{ .async = true, .activate = y_sum_id });
+    } else if (!area.is_left_col) {
+        @fadds(out_dsd, energy_dsd, in_dsd, .{ .async = true, .activate = y_sum_id });
     } else {
-        // For all other the rows, y_reduce_task is invoked when reception is complete
-        const in_dsd  = @get_dsd(fabin_dsd, .{
-            .fabric_color = recv_north_color,
-            .extent = Num + 1,
-            .input_queue = @get_input_queue(3),
-        });
-        @mov32(best_s_other_dsd, in_dsd, .{ .async = true, .activate = y_reduce_task_id });
+        @fadds(energy_dsd, energy_dsd, in_dsd, .{ .async = true, .activate = y_sum_id });
     }
 }
 
-// When this task is invoked, the data of the west neighbor must be in s2
-task x_reduce_task() void {
-    red();
-    if (is_right_col()) {
-        // After reduction in the x direction is completed, the nodes in the rightmost column start reduction in the y direction
-        start_y_reduce();
-    } else {
-        // Send to east neighbor node
-        const out_dsd = @get_dsd(fabout_dsd, .{
-            .fabric_color = send_east_color,
-            .extent = Num + 1,
-            .output_queue = @get_output_queue(2),
+task bcast_s() void {
+    comptime const s_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{M} -> s[i] });
+    if (area.is_top_row) {
+        comptime const out_dsd = @get_dsd(fabout_dsd, .{
+            .fabric_color = bcast_s_color,
+            .extent = M,
+            .output_queue = @get_output_queue(2)
         });
-        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+        @fmovs(out_dsd, s_dsd, .{ .async = true, .activate = x_sum_id });
+    } else {
+        comptime const in_dsd = @get_dsd(fabin_dsd, .{
+            .fabric_color = bcast_s_color,
+            .extent = M,
+            .input_queue = @get_input_queue(1)
+        });
+        @fmovs(s_dsd, in_dsd, .{ .async = true, .activate = x_sum_id });
     }
 }
 
-// When this task is invoked, the data of the north neighbor must be in s2
-task y_reduce_task() void {
-    red();
-    if (is_bottom_row()) {
-        // Because reduction is completed here, send to host
-        const out_dsd = @get_dsd(fabout_dsd, .{
-            .fabric_color = memcpy_mod.MEMCPYD2H_1,
-            .extent = Num + 1,
-            .output_queue = @get_output_queue(4),
-        });
-        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
-    } else {
-        // Send to south neighbor node
-        const out_dsd = @get_dsd(fabout_dsd, .{
-            .fabric_color = send_south_color,
-            .extent = Num + 1,
-            .output_queue = @get_output_queue(4),
-        });
-        @mov32(out_dsd, best_s_self_dsd, .{ .async = true });
+// update s, current_energy and best_s
+fn update_s() void {
+    const index = flip_index[0];
+    if (area.x_low <= index and index < area.x_high) {
+        const i = index - area.x_low;
+        if (do_flip[0] != 0.0) {
+            s[i] ^= 1;
+        }
     }
+    current_energy = do_flip[1];
+    if (current_energy < min_energy[0]) {
+        min_energy[0] = current_energy;
+        best_s = s;
+    }
+}
+
+fn bcast_flip_position() void {
+    comptime const index_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{1} -> flip_index[i] });
+    if (area.is_top_row and area.is_left_col) {
+        comptime const out_dsd = @get_dsd(fabout_dsd, .{
+            .fabric_color = bcast_fp,
+            .extent = 1,
+            .output_queue = @get_output_queue(4)
+        });
+        @mov32(out_dsd, index_dsd, .{ .async = true, .activate = bcast_s_id });
+    } else {
+        comptime const in_dsd = @get_dsd(fabin_dsd, .{
+            .fabric_color = bcast_fp,
+            .extent = 1,
+            .input_queue = @get_input_queue(3)
+        });
+        @mov32(index_dsd, in_dsd, .{ .async = true, .activate = bcast_s_id });
+    }
+}
+
+task main_task0() void {
+    if (area.is_top_row) {
+        update_s();
+    }
+    iter += 1;
+    if (iter > max_iters) {
+        memcpy_mod.unblock_cmd_stream();
+        return;
+    }
+    if (area.is_top_row and area.is_left_col) {
+        tempeature *= cool_rate;
+        // decide flip position by random
+        var i = rand.rand_int(0, Num);
+        flip_index[0] = @as(u32, i);
+    }
+    bcast_flip_position();
+}
+
+fn prepare_do_flip() void {
+    if (flip_energy[1] > 0.0) {
+        flip_energy[0] *= -1.0;
+    }
+    var d = flip_energy[0]; // energy difference if d was fliped
+    var p = math.exp(-d / tempeature);
+    if (d < 0.0 or rand.rand_dist(0.0, 1.0) < p) {
+        current_energy += d;
+        do_flip[0] = 1.0;
+    } else {
+        do_flip[0] = 0.0;
+    }
+    do_flip[1] = current_energy;
+}
+
+fn bcast_do_flip() void {
+    comptime const do_flip_dsd = @get_dsd(mem1d_dsd, .{ .tensor_access = |i|{2} -> do_flip[i] });
+    if (area.is_left_col) {
+        // broadcast do flip or not and current_energy
+        comptime const out_dsd = @get_dsd(fabout_dsd, .{
+            .fabric_color = bcast_df,
+            .extent = 2,
+            .output_queue = @get_output_queue(4)
+        });
+        @fmovs(out_dsd, do_flip_dsd, .{ .async = true, .activate = main_task0_id });
+    } else {
+        // recieve do flip or not and current_energy
+        comptime const in_dsd = @get_dsd(fabin_dsd, .{
+            .fabric_color = bcast_df,
+            .extent = 2,
+            .input_queue = @get_input_queue(3)
+        });
+        @fmovs(do_flip_dsd, in_dsd, .{ .async = true, .activate = main_task0_id });
+    }
+}
+
+task main_task1() void {
+    if (!area.is_top_row) {
+        @activate(main_task0_id);
+        return;
+    }
+    if (area.is_left_col) {
+        prepare_do_flip();
+    }
+    bcast_do_flip();
+}
+
+fn main() void {
+    const x = layout_mod.get_x_coord();
+    const y = layout_mod.get_y_coord();
+    area.x = x;
+    area.y = y;
+    area.x_low  = (@as(u32, x) + 0) * @as(u32, M);
+    area.x_high = (@as(u32, x) + 1) * @as(u32, M);
+    area.y_low  = (@as(u32, y) + 0) * @as(u32, N);
+    area.y_high = (@as(u32, y) + 1) * @as(u32, N);
+    area.is_left_col   = x == 0;
+    area.is_right_col  = x == width - 1;
+    area.is_top_row    = y == 0;
+    area.is_bottom_row = y == height - 1;
+    rand.set_initial_state(@as(u32, y) << 16 | @as(u32, x) + 1);
+    @activate(main_task0_id);
 }
 
 comptime {
-    @bind_data_task(recv_input, recv_input_task_id);
-    @bind_data_task(init, init_task_id);
-    @bind_local_task(main_task, main_task_id);
-    @bind_local_task(x_reduce_task, x_reduce_task_id);
-    @bind_local_task(y_reduce_task, y_reduce_task_id);
-
-    // Create RPC server using color LAUNCH
-    @rpc(@get_data_task_id(memcpy_mod.LAUNCH));
+    @export_symbol(Q_ptr, "Q");
+    @export_symbol(best_s_ptr, "best_s");
+    @export_symbol(min_energy_ptr, "min_energy");
+    @export_symbol(main);
+    @bind_local_task(y_sum, y_sum_id);
+    @bind_local_task(x_sum, x_sum_id);
+    @bind_local_task(bcast_s, bcast_s_id);
+    @bind_local_task(main_task0, main_task0_id);
+    @bind_local_task(main_task1, main_task1_id);
 }

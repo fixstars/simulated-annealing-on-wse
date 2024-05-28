@@ -9,7 +9,7 @@ $ command -v cslc cs_python # check SDK
 /path/to/cs_python
 $ cd path/to/repo
 $ cd src
-$ ./commands.sh 
+$ ./commands.sh
 + width=4
 + height=8
 + cslc ./layout.csl --fabric-dims=11,10 --fabric-offsets=4,1 --params=Num:6,width:4,height:8,max_iters:16,T:1000 --params=MEMCPYH2D_DATA_1_ID:0,MEMCPYD2H_DATA_1_ID:1 -o out --memcpy --channels 1
@@ -32,9 +32,9 @@ inputs = [ 0.5479121  -0.12224312  0.71719587  0.39473605 -0.8116453   0.9512447
   0.5222794   0.5721286  -0.74377275 -0.09922812 -0.25840396  0.85353
   0.28773025  0.64552325 -0.1131716  -0.5455226   0.10916957 -0.8723655
   0.65526235  0.2633288   0.5161755 ]
-95.04355487s
+99.045795591s
 best_s = [0 1 0 1 0 1]
-energy = -1.3816108703613281
+energy = -1.381609857082367
 INFO:    Cleaning up image...
 ```
 

@@ -1,70 +1,74 @@
 param Num: i16;
-param max_iters: i16;
+param max_iters: u16;
 param T: i16;
-param width: i16;
-param height: i16;
-param MEMCPYH2D_DATA_1_ID: i16;
-param MEMCPYD2H_DATA_1_ID: i16;
+param width: u16;
+param height: u16;
 
-const MEMCPYH2D_DATA_1: color = @get_color(MEMCPYH2D_DATA_1_ID);
-const MEMCPYD2H_DATA_1: color = @get_color(MEMCPYD2H_DATA_1_ID);
-const energy_color_x0: color = @get_color(2);
-const energy_color_x1: color = @get_color(3);
-const energy_color_y0: color = @get_color(4);
-const energy_color_y1: color = @get_color(5);
-const input_color: color = @get_color(6);
-const LAUNCH: color = @get_color(8);
-
-const recv_input_task_id: data_task_id = @get_data_task_id(MEMCPYH2D_DATA_1);
-const init_task_id: data_task_id = @get_data_task_id(input_color);
-const main_task_id: local_task_id = @get_local_task_id(9);
-const x_reduce_task_id: local_task_id = @get_local_task_id(10);
-const y_reduce_task_id: local_task_id = @get_local_task_id(11);
-const exit_task_id: local_task_id = @get_local_task_id(12);
+const bcast_fp: color = @get_color(0);
+const bcast_s: color = @get_color(1);
+const bcast_df: color = @get_color(2);
+const energy_x0: color = @get_color(3);
+const energy_x1: color = @get_color(4);
+const energy_y0: color = @get_color(5);
+const energy_y1: color = @get_color(6);
 
 const memcpy_mod = @import_module("<memcpy/get_params>", .{
     .width = width,
     .height = height,
-    .MEMCPYH2D_1 = MEMCPYH2D_DATA_1,
-    .MEMCPYD2H_1 = MEMCPYD2H_DATA_1,
-    .LAUNCH = LAUNCH
 });
 
-// Configure routes to broadcast input
-fn input_routes(x: i16, y: i16) comptime_struct {
+// Configure routes to broadcast flip position
+fn bcast_flip_position_routes(x: u16, y: u16) comptime_struct {
     if (x == 0) {
         if (y == 0) {
-            // Receive data from itself and send the data to itself and the east and south neighbors
-            return .{ .rx = .{RAMP},  .tx = .{RAMP, EAST, SOUTH} };
+            return .{ .rx = .{RAMP},  .tx = .{EAST, SOUTH} };
         } else if (y < height - 1) {
-            // Receive data from the north neighbor and send the data to itself, the east neighbor, and the south neighbor
             return .{ .rx = .{NORTH}, .tx = .{RAMP, EAST, SOUTH} };
         } else {
-            // Receive data from the north neighbor and send the data to itself and the east neighbor
             return .{ .rx = .{NORTH}, .tx = .{RAMP, EAST} };
         }
     } else if (x < width - 1) {
-        // Receive data from the west neighbor and send the data to itself and the east neighbor
         return .{ .rx = .{WEST}, .tx = .{RAMP, EAST} };
     } else {
-        // Receive data from the west neighbor and send the data to itself
         return .{ .rx = .{WEST}, .tx = .{RAMP} };
     }
 }
 
+// Configure routes to broadcast s
+fn bcast_s_routes(y: u16) comptime_struct {
+    if (y == 0) {
+        return .{ .rx = .{RAMP},  .tx = .{SOUTH} };
+    } else if (y < height - 1) {
+        return .{ .rx = .{NORTH},  .tx = .{RAMP, SOUTH} };
+    } else {
+        return .{ .rx = .{NORTH},  .tx = .{RAMP} };
+    }
+}
+
+// Configure routes to broadcast do_flip
+fn bcast_do_flip_routes(x: u16) comptime_struct {
+    if (x == 0) {
+        return .{ .rx = .{RAMP},  .tx = .{EAST} };
+    } else if (x < width - 1) {
+        return .{ .rx = .{WEST},  .tx = .{RAMP, EAST} };
+    } else {
+        return .{ .rx = .{WEST},  .tx = .{RAMP} };
+    }
+}
+
 // Configure routes for reduction in x, y direction
-fn energy_routes(x: i16, y: i16) comptime_struct {
+fn energy_routes(x: u16, y: u16) comptime_struct {
     // color x0 : even x PE -> send,  odd x PE -> receive
     // color x1 :  odd x PE -> send, even x PE -> receive
     // color y0 : even y PE -> send,  odd y PE -> receive
     // color y1 :  odd y PE -> send, even y PE -> receive
     const energy_x_routes = [2]comptime_struct {
-        .{ .rx = .{RAMP},  .tx = .{EAST} },
-        .{ .rx = .{WEST},  .tx = .{RAMP} },
+        .{ .rx = .{RAMP},  .tx = .{WEST} },
+        .{ .rx = .{EAST},  .tx = .{RAMP} },
     };
     const energy_y_routes = [2]comptime_struct {
-        .{ .rx = .{RAMP},  .tx = .{SOUTH} },
-        .{ .rx = .{NORTH}, .tx = .{RAMP}  },
+        .{ .rx = .{RAMP},  .tx = .{NORTH} },
+        .{ .rx = .{SOUTH}, .tx = .{RAMP}  },
     };
     return .{
         .x0 = energy_x_routes[(x + 0) % 2],
@@ -76,45 +80,40 @@ fn energy_routes(x: i16, y: i16) comptime_struct {
 
 layout {
     @set_rectangle(width, height);
-
     const common_params = .{
         .Num = Num,
         .max_iters = max_iters,
         .T = T,
         .width = width,
         .height = height,
-        .input_color = input_color,
-        .recv_input_task_id = recv_input_task_id,
-        .init_task_id = init_task_id,
-        .main_task_id = main_task_id,
-        .x_reduce_task_id = x_reduce_task_id,
-        .y_reduce_task_id = y_reduce_task_id,
-        .exit_task_id = exit_task_id,
+        .bcast_fp = bcast_fp,
+        .bcast_s_color = bcast_s,
+        .bcast_df = bcast_df,
     };
     // Receiving and sending reversed on left and right
     const x_params = [2]comptime_struct {
         .{
-            .send_east_color = energy_color_x0,
-            .recv_west_color = energy_color_x1,
+            .send_west = energy_x0,
+            .recv_east = energy_x1,
         },
         .{
-            .send_east_color = energy_color_x1,
-            .recv_west_color = energy_color_x0,
+            .send_west = energy_x1,
+            .recv_east = energy_x0,
         },
     };
     // Receiving and sending reversed up and down
     const y_params = [2]comptime_struct {
         .{
-            .send_south_color = energy_color_y0,
-            .recv_north_color = energy_color_y1,
+            .send_north = energy_y0,
+            .recv_south = energy_y1,
         },
         .{
-            .send_south_color = energy_color_y1,
-            .recv_north_color = energy_color_y0,
+            .send_north = energy_y1,
+            .recv_south = energy_y0,
         },
     };
-    for (@range(i16, height)) |y| {
-        for (@range(i16, width)) |x| {
+    for (@range(u16, height)) |y| {
+        for (@range(u16, width)) |x| {
             @set_tile_code(x, y, "pe_program.csl",
                 @concat_structs(common_params,
                 @concat_structs(x_params[x % 2],
@@ -122,13 +121,18 @@ layout {
                     .memcpy_params = memcpy_mod.get_params(x),
                 })))
             );
-            @set_color_config(x, y, input_color, .{ .routes = input_routes(x, y) });
+            @set_color_config(x, y, bcast_fp, .{ .routes = bcast_flip_position_routes(x, y) });
+            @set_color_config(x, y, bcast_s, .{ .routes = bcast_s_routes(y) });
+            @set_color_config(x, y, bcast_df, .{ .routes = bcast_do_flip_routes(x) });
             const energy_routes = energy_routes(x, y);
-            @set_color_config(x, y, energy_color_x0, .{ .routes = energy_routes.x0 });
-            @set_color_config(x, y, energy_color_x1, .{ .routes = energy_routes.x1 });
-            // y0 and y1 are only used at the right end, but other locations should also be set just in case.
-            @set_color_config(x, y, energy_color_y0, .{ .routes = energy_routes.y0 });
-            @set_color_config(x, y, energy_color_y1, .{ .routes = energy_routes.y1 });
+            @set_color_config(x, y, energy_x0, .{ .routes = energy_routes.x0 });
+            @set_color_config(x, y, energy_x1, .{ .routes = energy_routes.x1 });
+            @set_color_config(x, y, energy_y0, .{ .routes = energy_routes.y0 });
+            @set_color_config(x, y, energy_y1, .{ .routes = energy_routes.y1 });
         }
     }
+    @export_name("Q", [*]f32, true);
+    @export_name("best_s", [*]i32, false);
+    @export_name("min_energy", [*]f32, false);
+    @export_name("main", fn()void);
 }

@@ -1,0 +1,6 @@
+out/
+simfab_traces/
+sim.log
+simconfig.json
+sim_stats.json
+wio_flow.json
