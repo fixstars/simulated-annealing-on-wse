@@ -5,122 +5,132 @@ import numpy as np
 import json
 import struct
 import time
+from pathlib import Path
 
 import cerebras.sdk.runtime.sdkruntimepybind as csdk
-import amplify
+import tomli
 
+
+def f32_to_u32(x) -> int:
+    return struct.unpack('I', struct.pack('f', x))[0]
+
+def energy(Q, s):
+    d = np.array(Q.diagonal(), copy=True)
+    U = np.triu(Q) - np.diag(d)
+    return s @ U @ s + d.T @ s
 
 # Read arguments
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', help="the test compile output dir")
     parser.add_argument('--cmaddr', help="IP:port for CS system")
-    parser.add_argument('--token', help="amplify token")
-    parser.add_argument('--debug', '-d', action='store_false', help='set suppress_simfab_trace to False')
+    parser.add_argument('--input_dir', help="input directory for Q")
+    parser.add_argument('--config', '-c', help="config file")
     return parser.parse_args()
 
+def send_Q(runner, Num, Q, MEMCPYH2D_DATA_1_ID):
+    chunk_size = 32766 # Will not work if INT16_MAX or higher.
+    rest = Num * Num
+    send = 0
+    while True:
+        if rest >= chunk_size:
+            runner.memcpy_h2d(MEMCPYH2D_DATA_1_ID, Q[send:], 0, 0, 1, 1, chunk_size, streaming=True,
+                    order=csdk.MemcpyOrder.ROW_MAJOR, data_type=csdk.MemcpyDataType.MEMCPY_32BIT, nonblock=False)
+            send += chunk_size
+            rest -= chunk_size
+        else:
+            runner.memcpy_h2d(MEMCPYH2D_DATA_1_ID, Q[send:], 0, 0, 1, 1, rest, streaming=True,
+                    order=csdk.MemcpyOrder.ROW_MAJOR, data_type=csdk.MemcpyDataType.MEMCPY_32BIT, nonblock=False)
+            break
 
-def generate_q(rng, Num):
-    inputs_len = Num * (Num + 1) // 2
-    inputs = np.asarray(rng.uniform(-1.0, 1.0, inputs_len), dtype=np.float32)
-    Q = np.zeros((Num, Num), dtype=np.float32)
-    c = 0
-    for i in range(Num):
-        for j in range(i, Num):
-            Q[i][j] = inputs[c]
-            Q[j][i] = inputs[c]
-            c += 1
-    return Q
+def load_test(dir: Path):
+    return (np.load(dir / "Q.npy", allow_pickle=False), 
+            np.load(dir / "s.npy", allow_pickle=False),
+            np.load(dir / "E.npy", allow_pickle=False))
 
+def run(runner, Num, params, Q):
+    MEMCPYH2D_DATA_1_ID = int(params['MEMCPYH2D_DATA_1_ID'])
+    MEMCPYD2H_DATA_1_ID = int(params['MEMCPYD2H_DATA_1_ID'])
+    block_height = int(params['block_height'])
+    block_width = int(params['block_width'])
+    M = Num // block_width
+    print(f"{params=}")
 
-def solve_amplify(token, Q, Num):
-    gen = amplify.VariableGenerator()
-    s = gen.array("Binary", Num)
-    energy_function = amplify.sum(
-        [Q[i][j] * s[i] * s[j] for i in range(Num) for j in range(i + 1, Num)]
-        + [Q[i][i] * s[i] for i in range(Num)]
-    )
-    print(f"{energy_function=}")
-    client = amplify.FixstarsClient()
-    client.token = token
-    client.parameters.timeout = 100
+    Q = np.ravel(Q)
+    min_energy_and_position = np.zeros(2, dtype=np.float32)
+    best_s = np.zeros(Num, dtype=np.int32)
 
-    result = amplify.solve(energy_function, client)
-    output = s.evaluate(result.best.values).astype(np.int32)
-    return (output, result.best.objective)
-
-
-def run(runner, width, height, N, M, Q):
-    Q_symbol = runner.get_id('Q')
-    best_s_symbol = runner.get_id('best_s')
-    min_energy_symbol = runner.get_id('min_energy')
-
-    best_s = np.zeros(width * M, dtype=np.int32)
-    min_energy = np.zeros(1, dtype=np.float32)
-
-    Q = Q.reshape((height, N, width, M)).transpose(0, 2, 1, 3)
-    Q = Q.ravel()
-
-    st = time.time_ns()
+    t0 = time.time_ns()
     # Load and run the program
     runner.load()
+    t1 = time.time_ns()
+    print(f"runner.load {(t1 - t0) / 1e9}s")
     runner.run()
+    t2 = time.time_ns()
+    print(f"runner.run {(t2 - t1) / 1e9}s")
 
-    runner.memcpy_h2d(Q_symbol, Q, 0, 0, width, height, N * M, streaming=False,
-        order=csdk.MemcpyOrder.ROW_MAJOR, data_type=csdk.MemcpyDataType.MEMCPY_32BIT, nonblock=False)
+    send_Q(runner, Num, Q, MEMCPYH2D_DATA_1_ID)
 
-    runner.launch('main', nonblock=False)
-
-    runner.memcpy_d2h(best_s, best_s_symbol, 0, 0, width, 1, M, streaming=False,
+    t3 = time.time_ns()
+    print(f"memcpy_h2d {(t3 - t2) / 1e9}s")
+    runner.memcpy_d2h(min_energy_and_position, MEMCPYD2H_DATA_1_ID, 0, 0, 1, 1, 2, streaming=True,
         order=csdk.MemcpyOrder.ROW_MAJOR, data_type=csdk.MemcpyDataType.MEMCPY_32BIT, nonblock=False)
-    runner.memcpy_d2h(min_energy, min_energy_symbol, 0, 0, 1, 1, 1, streaming=False,
+    t4 = time.time_ns()
+    print(f"memcpy_d2h {(t4 - t3) / 1e9}s")
+    p = f32_to_u32(min_energy_and_position[1])
+    gy = p >> 16
+    gx = p & 0xFFFF
+    runner.memcpy_d2h(best_s, MEMCPYD2H_DATA_1_ID, gx * block_width, gy * block_height, block_width, 1, M, streaming=True,
         order=csdk.MemcpyOrder.ROW_MAJOR, data_type=csdk.MemcpyDataType.MEMCPY_32BIT, nonblock=False)
+    t5 = time.time_ns()
+    print(f"memcpy_d2h {(t5 - t4) / 1e9}s")
 
     # Stop the program
     runner.stop()
-    et = time.time_ns()
-    print(f"{(et - st) / 1e9}s")
-    return (best_s, min_energy[0])
+    t6 = time.time_ns()
+    print(f"runner.stop {(t6 - t5) / 1e9}s")
+    print(f"total {(t6 - t0) / 1e9}s")
+
+    min_energy = min_energy_and_position[0]
+    return (best_s, min_energy)
 
 
 def main():
     args = parse_args()
 
+    with open(args.config, "rb") as f:
+        config = tomli.load(f)
+    params = config['params']
+    test = config['test']
+
     with open(f"{args.name}/out.json", encoding='utf-8') as json_file:
         compile_data = json.load(json_file)
 
-    Num = int(compile_data['params']['Num'])
-    width = int(compile_data['params']['width'])
-    height = int(compile_data['params']['height'])
-    N = Num // height
-    M = Num // width
+    Num = int(params['Num'])
 
     # Construct a runner using SdkRuntime
-    runner = csdk.SdkRuntime(args.name, cmaddr=args.cmaddr, suppress_simfab_trace=args.debug)
-
-    rng = np.random.default_rng()
-    Q = generate_q(rng, Num)
+    runner = csdk.SdkRuntime(args.name, cmaddr=args.cmaddr, suppress_simfab_trace=config["sdk"]["suppress_simfab_trace"])
+    Q, opt_s, opt_E = load_test(Path(test['directory']))
 
     print(f"{Q=}")
-    s_amplify, e_amplify = solve_amplify(args.token, Q, Num)
-    print(f"{s_amplify=}")
-    print(f"{e_amplify=}")
 
-    best_s, min_energy = run(runner, width, height, N, M, Q)
+    best_s, min_energy = run(runner, Num, compile_data["params"], Q)
     print(f"{best_s=}")
-    min_energy = np.sum(
-        [Q[i][j] * best_s[i] * best_s[j] for i in range(Num) for j in range(i + 1, Num)]
-        + [Q[i][i] * best_s[i] for i in range(Num)]
-    )
     print(f"{min_energy=}")
+    
+    # Because the energy calculated in the WSE has insufficient precision, we compare to the recalculated energy in Python.
+    comp_energy = energy(Q, best_s)
 
-    if all(s_amplify == best_s):
+    if opt_E >= comp_energy:
+        print(f"opt_s\t= {opt_E:7.3f}, {opt_s}")
+        print(f"best_s\t= {min_energy:7.3f}, {best_s}")
         print("OK")
     else:
-        print(f"amplify = {e_amplify:7.3f}, {s_amplify}")
-        print(f"best_s  = {min_energy:7.3f}, {best_s}")
+        print(f"opt_s\t= {opt_E:7.3f}, {opt_s}")
+        print(f"best_s\t= {min_energy:7.3f}, {best_s}")
         print("NG")
         exit(1)
+
 
 
 if __name__ == '__main__':

@@ -4,7 +4,7 @@ Docker image for cerebras
 
 ## Build
 
-Please place the tar.gz of the Cerebras SDK in this directory under the name `Cerabras-SDK.tar.gz`.
+Please place the tar.gz of the Cerebras SDK in this directory under the name `Cerebras-SDK.tar.gz`.
 
 ```console
 cd /path/to/cerebras_docker
@@ -26,16 +26,6 @@ Then, build the Docker image by `build.sh`
 ./build.sh
 ```
 
-This script is the same as the following commands.
-
-```console
-cd /path/to/cerebras_docker
-docker build \
-  --build-arg UID="$(id -u)" \
-  --build-arg GID="$(id -g)" \
-  --tag cerebras:${USER} .
-```
-
 ## Launch
 
 ### run docker image
@@ -46,22 +36,6 @@ Please set `AMPLIFY_TOKEN` environment.
 ./run_cerebras.sh
 ```
 
-This script is the same as the following commands.
-
-```console
-cd /path/to/cerebras_docker
-docker run \
-       -it \
-       --rm \
-       --privileged \
-       --name cerebras \
-       --env AMPLIFY_TOKEN=$AMPLIFY_TOKEN \
-       --env SA_WIDTH="$SA_WIDTH" \
-       --env SA_HEIGHT="$SA_HEIGHT" \
-       --mount "type=bind,source=$(realpath /path/to/cerebras_sa),target=/home/cerebras/cerebras_sa/" \
-       cerebras:${USER}
-```
-
 ### execute cerebras_sa in docker image
 
 Please set `AMPLIFY_TOKEN` environment.
@@ -70,29 +44,33 @@ Please set `AMPLIFY_TOKEN` environment.
 ./exec_cerebras_sa.sh
 ```
 
-This script is the same as the following commands.
-
-```console
-cd /path/to/cerebras_docker
-docker run \
-       -it \
-       --rm \
-       --privileged \
-       --name cerebras \
-       --env AMPLIFY_TOKEN=$AMPLIFY_TOKEN \
-       --env SA_WIDTH="$SA_WIDTH" \
-       --env SA_HEIGHT="$SA_HEIGHT" \
-       --mount "type=bind,source=$(realpath /path/to/cerebras_sa),target=/home/cerebras/cerebras_sa/" \
-       cerebras:${USER} \
-       /bin/bash -c \
-         "export PATH=\$HOME/cs_sdk:\$PATH && \
-          cd \$HOME/cerebras_sa/src && \
-          ./commands.sh"
-```
-
 ### run docker image without cerebras_sa (optional)
 
 ```console
 cd /path/to/cerebras_docker
 docker run -it --privileged --rm --name cerebras cerebras:${USER}
+```
+
+## Visualize
+
+### Start visualizer in docker image
+
+![visualizer](imgs/visualizer.png)
+
+Run cerebras_sa in debug mode to generate simfab_traces before you use the visualizer.
+
+Please change `cerebras_sa/config/small.toml` to the following diff.
+
+```diff
+--- a/config/small.toml
++++ b/config/small.toml
+-suppress_simfab_trace = true
++suppress_simfab_trace = false
+```
+
+```console
+# run cerebras_sa in debug mode ( suppress_simfab_trace = false)
+./exec_cerebras_sa.sh
+# start visualizer
+./visualize_cerebras_sa.sh
 ```

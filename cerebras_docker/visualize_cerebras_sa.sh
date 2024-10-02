@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 print_help() {
-    echo "usage: run_cerebras.sh [-p port] [-h]"
+    echo "usage: visualize_cerebras_sa.sh [-p port] [-h]"
     echo "    options:"
     echo "        -p port           visualizer port (default to 50000)"
     echo "        -h                show this help message and exit"
@@ -39,4 +39,5 @@ docker run \
        --env-file "${SCRIPT_DIR}/config/cerebras_docker.env" \
        --mount "type=bind,source=$(realpath "${SCRIPT_DIR}"/../),target=/home/cerebras/cerebras_sa/" \
        -p $visualizer_port:8000 \
-       cerebras:${USER}
+       cerebras:${USER} \
+       /bin/bash -c "sdk_debug_shell visualize --artifact_dir \$HOME/cerebras_sa"

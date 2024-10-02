@@ -1,0 +1,13 @@
+[params]
+Num = 4096
+block_height = 64
+block_width = 64
+grid_height = 15
+grid_width = 11
+max_iters = 4294967294
+time_constant = 250000
+log_init_temperature = 33946 # exp((33946 - 32768) / 256) ≒ 99.6
+[sdk]
+suppress_simfab_trace = true
+[test]
+directory = "test4096"

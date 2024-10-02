@@ -1,0 +1,13 @@
+[params]
+Num = 8
+block_height = 2
+block_width = 2
+grid_height = 4
+grid_width = 4
+max_iters = 128
+time_constant = 2500
+log_init_temperature = 33357 # exp((33357 - 32768) / 256) ≒ 9.98
+[sdk]
+suppress_simfab_trace = true
+[test]
+directory = "test/sample8"

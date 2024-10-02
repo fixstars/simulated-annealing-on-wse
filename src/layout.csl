@@ -1,27 +1,47 @@
-param Num: i16;
-param max_iters: u16;
-param T: i16;
-param width: u16;
-param height: u16;
+param Num: u16;
+param max_iters: u32;
+param time_constant: u32;
+param log_init_temperature: u16;
+param block_width: u16;
+param block_height: u16;
+param grid_width: u16;
+param grid_height: u16;
+param MEMCPYH2D_DATA_1_ID: i16;
+param MEMCPYD2H_DATA_1_ID: i16;
 
-const bcast_fp: color = @get_color(0);
-const bcast_s: color = @get_color(1);
-const bcast_df: color = @get_color(2);
-const energy_x0: color = @get_color(3);
-const energy_x1: color = @get_color(4);
-const energy_y0: color = @get_color(5);
-const energy_y1: color = @get_color(6);
+const width = block_width * grid_width;
+const height = block_height * grid_height;
+
+const MEMCPYH2D_DATA_1: color = @get_color(MEMCPYH2D_DATA_1_ID);
+const MEMCPYD2H_DATA_1: color = @get_color(MEMCPYD2H_DATA_1_ID);
+const bcast_fp: color = @get_color(2);
+const bcast_s: color = @get_color(3);
+const bcast_df: color = @get_color(4);
+const bcast_Q: color = @get_color(5);
+const energy_x0: color = @get_color(6);
+const energy_x1: color = @get_color(7);
+const energy_y0: color = @get_color(8);
+const energy_y1: color = @get_color(9);
+const global_energy_x0: color = @get_color(10);
+const global_energy_x1: color = @get_color(11);
+const global_energy_y0: color = @get_color(12);
+const global_energy_y1: color = @get_color(13);
+const bcast_min_energy: color = @get_color(14);
 
 const memcpy_mod = @import_module("<memcpy/get_params>", .{
     .width = width,
     .height = height,
+    .MEMCPYH2D_1 = MEMCPYH2D_DATA_1,
+    .MEMCPYD2H_1 = MEMCPYD2H_DATA_1,
 });
+const dummy_route = .{ .rx = .{}, .tx = .{} };
 
-// Configure routes to broadcast flip position
-fn bcast_flip_position_routes(x: u16, y: u16) comptime_struct {
+/// Configure routes to broadcast Q
+fn bcast_Q_routes(x: u16, y: u16) comptime_struct {
     if (x == 0) {
         if (y == 0) {
-            return .{ .rx = .{RAMP},  .tx = .{EAST, SOUTH} };
+            // send from here
+            return .{ .rx = .{RAMP},  .tx = .{RAMP, EAST, SOUTH} };
         } else if (y < height - 1) {
             return .{ .rx = .{NORTH}, .tx = .{RAMP, EAST, SOUTH} };
         } else {
@@ -34,29 +54,52 @@ fn bcast_flip_position_routes(x: u16, y: u16) comptime_struct {
     }
 }
 
-// Configure routes to broadcast s
+/// Configure routes to broadcast flip position
+fn bcast_flip_position_routes(x: u16, y: u16) comptime_struct {
+    if (x == 0) {
+        if (y == 0) {
+            // send from here
+            return .{ .rx = .{RAMP},  .tx = .{RAMP, EAST, SOUTH} };
+        } else if (y < block_height - 1) {
+            return .{ .rx = .{NORTH}, .tx = .{RAMP, EAST, SOUTH} };
+        } else {
+            return .{ .rx = .{NORTH}, .tx = .{RAMP, EAST} };
+        }
+    } else if (x < block_width - 1) {
+        return .{ .rx = .{WEST}, .tx = .{RAMP, EAST} };
+    } else {
+        return .{ .rx = .{WEST}, .tx = .{RAMP} };
+    }
+}
+
+/// Configure routes to broadcast s
 fn bcast_s_routes(y: u16) comptime_struct {
     if (y == 0) {
-        return .{ .rx = .{RAMP},  .tx = .{SOUTH} };
-    } else if (y < height - 1) {
+        // send from here
+        return .{ .rx = .{RAMP},  .tx = .{RAMP, SOUTH} };
+    } else if (y < block_height - 1) {
         return .{ .rx = .{NORTH},  .tx = .{RAMP, SOUTH} };
     } else {
         return .{ .rx = .{NORTH},  .tx = .{RAMP} };
     }
 }
 
-// Configure routes to broadcast do_flip
-fn bcast_do_flip_routes(x: u16) comptime_struct {
+/// Configure routes to broadcast do_flip
+fn bcast_do_flip_routes(x: u16, y: u16) comptime_struct {
+    if (y != 0) {
+        return dummy_route;
+    }
     if (x == 0) {
+        // send from here
         return .{ .rx = .{RAMP},  .tx = .{EAST} };
-    } else if (x < width - 1) {
+    } else if (x < block_width - 1) {
         return .{ .rx = .{WEST},  .tx = .{RAMP, EAST} };
     } else {
         return .{ .rx = .{WEST},  .tx = .{RAMP} };
     }
 }
 
-// Configure routes for reduction in x, y direction
+/// Configure routes for reduction in x, y direction
 fn energy_routes(x: u16, y: u16) comptime_struct {
     // color x0 : even x PE -> send,  odd x PE -> receive
     // color x1 :  odd x PE -> send, even x PE -> receive
@@ -70,25 +113,147 @@ fn energy_routes(x: u16, y: u16) comptime_struct {
         .{ .rx = .{RAMP},  .tx = .{NORTH} },
         .{ .rx = .{SOUTH}, .tx = .{RAMP}  },
     };
-    return .{
-        .x0 = energy_x_routes[(x + 0) % 2],
-        .x1 = energy_x_routes[(x + 1) % 2],
-        .y0 = energy_y_routes[(y + 0) % 2],
-        .y1 = energy_y_routes[(y + 1) % 2],
-    };
+    if (x == 0) {
+        return .{
+            .x0 = energy_x_routes[(x + 0) % 2],
+            .x1 = energy_x_routes[(x + 1) % 2],
+            .y0 = energy_y_routes[(y + 0) % 2],
+            .y1 = energy_y_routes[(y + 1) % 2],
+        };
+    } else {
+        return .{
+            .x0 = energy_x_routes[(x + 0) % 2],
+            .x1 = energy_x_routes[(x + 1) % 2],
+            .y0 = dummy_route,
+            .y1 = dummy_route,
+        };
+    }
+}
+
+/// Configure routes for reduction in x, y direction
+fn global_energy_routes(x: u16, y: u16) comptime_struct {
+    const gx = x / block_width;
+    const gy = y / block_height;
+    const bx = x % block_width;
+    const by = y % block_height;
+    if (bx == 0 and by == 0) {
+        //The top left most PE in the block
+
+        // color x0 : even x PE -> send,  odd x PE -> receive
+        // color x1 :  odd x PE -> send, even x PE -> receive
+        // color y0 : even y PE -> send,  odd y PE -> receive
+        // color y1 :  odd y PE -> send, even y PE -> receive
+        const s_x_routes = [2]comptime_struct {
+            .{ .rx = .{RAMP},  .tx = .{WEST} },
+            .{ .rx = .{EAST},  .tx = .{RAMP} },
+        };
+        const s_y_routes = [2]comptime_struct {
+            .{ .rx = .{RAMP},  .tx = .{NORTH} },
+            .{ .rx = .{SOUTH}, .tx = .{RAMP}  },
+        };
+        if (gx == 0) {
+            return .{
+                .x0 = s_x_routes[(gx + 0) % 2],
+                .x1 = s_x_routes[(gx + 1) % 2],
+                .y0 = s_y_routes[(gy + 0) % 2],
+                .y1 = s_y_routes[(gy + 1) % 2],
+            };
+        } else {
+            return .{
+                .x0 = s_x_routes[(gx + 0) % 2],
+                .x1 = s_x_routes[(gx + 1) % 2],
+                .y0 = dummy_route,
+                .y1 = dummy_route,
+            };
+        }
+    } else {
+        // Pass through
+        if (by == 0) {
+            return .{
+                .x0 = .{ .rx = .{EAST},  .tx = .{WEST} },
+                .x1 = .{ .rx = .{EAST},  .tx = .{WEST} },
+                .y0 = dummy_route,
+                .y1 = dummy_route,
+            };
+        } else if (bx == 0) {
+            return .{
+                .x0 = dummy_route,
+                .x1 = dummy_route,
+                .y0 = .{ .rx = .{SOUTH},  .tx = .{NORTH} },
+                .y1 = .{ .rx = .{SOUTH},  .tx = .{NORTH} },
+            };
+        } else {
+            return .{
+                .x0 = dummy_route,
+                .x1 = dummy_route,
+                .y0 = dummy_route,
+                .y1 = dummy_route,
+            };
+        }
+    }
+}
+
+/// Configure routes to min_energy
+fn bcast_min_energy_routes(x: u16, y: u16) comptime_struct {
+    const gx = x / block_width;
+    const gy = y / block_height;
+    const bx = x % block_width;
+    const by = y % block_height;
+    if (bx == 0 and by == 0) {
+        if (gx == 0) {
+            if (gy == 0) {
+                // send from here
+                if (grid_width == 1) {
+                    return .{ .rx = .{RAMP},  .tx = .{RAMP, SOUTH} };
+                } else if (grid_height == 1) {
+                    return .{ .rx = .{RAMP},  .tx = .{RAMP, EAST} };
+                } else {
+                    return .{ .rx = .{RAMP},  .tx = .{RAMP, EAST, SOUTH} };
+                }
+            } else if (gy < grid_height - 1) {
+                return .{ .rx = .{NORTH}, .tx = .{RAMP, EAST, SOUTH} };
+            } else {
+                return .{ .rx = .{NORTH}, .tx = .{RAMP, EAST} };
+            }
+        } else {
+            return .{ .rx = .{WEST}, .tx = .{RAMP, EAST} };
+        }
+    } else {
+        if (by == 0) {
+            if (x == width - 1) {
+                return .{ .rx = .{WEST}, .tx = .{RAMP} };
+            } else {
+                return .{ .rx = .{WEST}, .tx = .{RAMP, EAST} };
+            }
+        } else if (bx == 0 and gy < grid_height - 1 and gx == 0) {
+            // Pass through
+            return .{ .rx = .{NORTH}, .tx = .{SOUTH} };
+        } else {
+            return dummy_route;
+        }
+    }
 }
 
 layout {
     @set_rectangle(width, height);
+    @comptime_assert((Num % block_width == 0) and (Num % block_height == 0));
+    @comptime_assert(block_width > 1 and block_height > 1);
     const common_params = .{
         .Num = Num,
         .max_iters = max_iters,
-        .T = T,
-        .width = width,
-        .height = height,
+        .time_constant = time_constant,
+        .log_init_temperature = log_init_temperature,
+        .block_width = block_width,
+        .block_height = block_height,
+        .grid_width = grid_width,
+        .grid_height = grid_height,
         .bcast_fp = bcast_fp,
         .bcast_s_color = bcast_s,
         .bcast_df = bcast_df,
+        .MEMCPYH2D_DATA_1 = MEMCPYH2D_DATA_1,
+        .MEMCPYD2H_DATA_1 = MEMCPYD2H_DATA_1,
+        .bcast_Q_color = bcast_Q,
+        .bcast_min_energy_color = bcast_min_energy,
     };
     // Receiving and sending reversed on left and right
     const x_params = [2]comptime_struct {
@@ -112,27 +277,58 @@ layout {
             .recv_south = energy_y0,
         },
     };
+    // Receiving and sending reversed on left and right
+    const ge_x_params = [2]comptime_struct {
+        .{
+            .ge_send_west = global_energy_x0,
+            .ge_recv_east = global_energy_x1,
+        },
+        .{
+            .ge_send_west = global_energy_x1,
+            .ge_recv_east = global_energy_x0,
+        },
+    };
+    // Receiving and sending reversed up and down
+    const ge_y_params = [2]comptime_struct {
+        .{
+            .ge_send_north = global_energy_y0,
+            .ge_recv_south = global_energy_y1,
+        },
+        .{
+            .ge_send_north = global_energy_y1,
+            .ge_recv_south = global_energy_y0,
+        },
+    };
     for (@range(u16, height)) |y| {
         for (@range(u16, width)) |x| {
+            const bx = x % block_width;
+            const by = y % block_height;
+            const gx = x / block_width;
+            const gy = y / block_height;
             @set_tile_code(x, y, "pe_program.csl",
                 @concat_structs(common_params,
-                @concat_structs(x_params[x % 2],
-                @concat_structs(y_params[y % 2], .{
+                @concat_structs(x_params[bx % 2],
+                @concat_structs(y_params[by % 2],
+                @concat_structs(ge_x_params[gx % 2],
+                @concat_structs(ge_y_params[gy % 2], .{
                     .memcpy_params = memcpy_mod.get_params(x),
-                })))
+                })))))
             );
-            @set_color_config(x, y, bcast_fp, .{ .routes = bcast_flip_position_routes(x, y) });
-            @set_color_config(x, y, bcast_s, .{ .routes = bcast_s_routes(y) });
-            @set_color_config(x, y, bcast_df, .{ .routes = bcast_do_flip_routes(x) });
-            const energy_routes = energy_routes(x, y);
+            @set_color_config(x, y, bcast_fp, .{ .routes = bcast_flip_position_routes(bx, by) });
+            @set_color_config(x, y, bcast_s, .{ .routes = bcast_s_routes(by) });
+            @set_color_config(x, y, bcast_df, .{ .routes = bcast_do_flip_routes(bx, by) });
+            @set_color_config(x, y, bcast_Q, .{ .routes = bcast_Q_routes(x, y) });
+            @set_color_config(x, y, bcast_min_energy, .{ .routes = bcast_min_energy_routes(x, y) });
+            const energy_routes = energy_routes(bx, by);
             @set_color_config(x, y, energy_x0, .{ .routes = energy_routes.x0 });
             @set_color_config(x, y, energy_x1, .{ .routes = energy_routes.x1 });
             @set_color_config(x, y, energy_y0, .{ .routes = energy_routes.y0 });
             @set_color_config(x, y, energy_y1, .{ .routes = energy_routes.y1 });
+            const global_energy_routes = global_energy_routes(x, y);
+            @set_color_config(x, y, global_energy_x0, .{ .routes = global_energy_routes.x0 });
+            @set_color_config(x, y, global_energy_x1, .{ .routes = global_energy_routes.x1 });
+            @set_color_config(x, y, global_energy_y0, .{ .routes = global_energy_routes.y0 });
+            @set_color_config(x, y, global_energy_y1, .{ .routes = global_energy_routes.y1 });
         }
     }
-    @export_name("Q", [*]f32, true);
-    @export_name("best_s", [*]i32, false);
-    @export_name("min_energy", [*]f32, false);
-    @export_name("main", fn()void);
 }
