@@ -1,0 +1,78 @@
+
+param trace_buffer_size: u16;
+param collector_buffer_size: u16;
+param is_left_col: bool;
+param is_right_col: bool;
+param send_bus: color;
+param recv_bus: color;
+param statistics_color: color;
+param memcpy_params: comptime_struct;
+
+const statistics_id = @get_data_task_id(statistics_color);
+const recv_bus_id = @get_data_task_id(recv_bus);
+const invoke_id = if (is_left_col) statistics_id else recv_bus_id;
+
+const send_statistics_id = @get_local_task_id(16);
+
+const memcpy_mod = @import_module("<memcpy/memcpy>", memcpy_params);
+const tracer = @import_module("libtrace/tracer.csl",
+    .{
+       .trace_buffer_size = trace_buffer_size,
+       .collector_buffer_size = collector_buffer_size,
+    }
+);
+
+const TRACE_INFO = enum(u16) {
+    RECV_STATISTICS_BEGIN = 24, RECV_STATISTICS_END = 25,
+    SEND_STATISTICS_BEGIN = 26, SEND_STATISTICS_END = 27
+};
+
+const COLLECT_INFO_NUM = tracer.COLLECT_INFO_NUM;
+var send_buf = @zeros([COLLECT_INFO_NUM]f32);
+var recv_buf = @zeros([COLLECT_INFO_NUM]f32);
+var recv_buf_counter: u16 = 0;
+
+task send_statistics() void {
+    tracer.measure(TRACE_INFO.SEND_STATISTICS_BEGIN); // TRACE BEGIN
+    comptime const send_buf_dsd = @get_dsd(mem1d_dsd, .{.tensor_access = |i|{COLLECT_INFO_NUM} -> send_buf[i] });
+    comptime const out_dsd = @get_dsd(fabout_dsd, .{
+        .fabric_color = send_bus,
+        .extent = COLLECT_INFO_NUM,
+        .output_queue = @get_output_queue(3)
+    });
+    @fmovs(out_dsd, send_buf_dsd, .{ .async = true, .unblock = invoke_id});
+    tracer.measure(TRACE_INFO.SEND_STATISTICS_END); // TRACE END
+}
+
+task recv_statistics(data: f32) void {
+    tracer.measure(TRACE_INFO.RECV_STATISTICS_BEGIN); // TRACE BEGIN
+    recv_buf[recv_buf_counter] = data;
+    recv_buf_counter += 1;
+    if (recv_buf_counter == COLLECT_INFO_NUM) {
+        if (tracer.can_collect()) {
+            tracer.collect(&recv_buf);
+        } else {
+            if (!is_right_col) {
+                @block(invoke_id);
+                send_buf = recv_buf;
+                @activate(send_statistics_id);
+            }else {
+                // drop statistics!!
+            }
+        }
+        recv_buf_counter = 0;
+    }
+    tracer.measure(TRACE_INFO.RECV_STATISTICS_END); // TRACE END
+}
+
+fn init() void {
+    tracer.trace_init();
+    memcpy_mod.unblock_cmd_stream();
+}
+
+comptime {
+    @bind_local_task(send_statistics, send_statistics_id);
+    @bind_data_task(recv_statistics, invoke_id);
+    tracer.export_names();
+    @export_symbol(init);
+}

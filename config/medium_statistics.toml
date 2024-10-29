@@ -1,0 +1,20 @@
+[params]
+Num = 24
+block_height = 3
+block_width = 3
+grid_height = 2
+grid_width = 2
+max_iters = 4096
+log2_swap_interval = 32 # disable (2^32 > 4096)
+time_constant = 2500
+log_init_temperature = 33357 # exp((33357 - 32768) / 256) ≒ 9.98
+[trace] # 0 : disable, otherwise : enable
+  [trace.tracer]
+  trace_buffer_size = 0
+  [trace.collector]
+  iterations_per_collect = 32
+  collector_buffer_size = 172 # ⌈ 4096 / (32 * 3) ⌉ * 4 = 172
+[sdk]
+suppress_simfab_trace = true
+[test]
+directory = "test/statistics24"

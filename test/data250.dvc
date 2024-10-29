@@ -1,0 +1,6 @@
+outs:
+- md5: 2692a708db6b08809a14751f6e65bedd.dir
+  size: 126892
+  nfiles: 3
+  hash: md5
+  path: data250

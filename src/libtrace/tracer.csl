@@ -1,0 +1,50 @@
+param trace_buffer_size: comptime_int = 0;
+param collector_buffer_size: comptime_int = 0;
+
+const tr = @import_module("libtrace/internal/tracerImpl.csl",
+    .{
+       .trace_buffer_size = trace_buffer_size,
+       .collector_buffer_size = collector_buffer_size,
+    }
+);
+
+// =========================================================================== //
+//                                    TRACE                                    //
+// =========================================================================== //
+
+fn trace_init() void {
+    if (trace_buffer_size > 0) {
+        tr.trace_init();
+    }
+}
+/// because 'enum(u16)' type is not 'u16', used 'anytype' instead.
+fn measure(comptime measure_point_id: anytype) void {
+    if (trace_buffer_size > 0){
+        tr.measure(@as(u16, measure_point_id));
+    }
+}
+// =========================================================================== //
+//                                  COLLECTOR                                  //
+// =========================================================================== //
+const COLLECT_INFO_NUM = tr.COLLECT_INFO_NUM;
+fn can_collect() bool {
+    if (collector_buffer_size > 0) {
+        return tr.can_collect();
+    }
+    return false;
+}
+fn collect(statistics_data: *[COLLECT_INFO_NUM]f32) bool {
+    if (collector_buffer_size > 0) {
+        return tr.collect(statistics_data);
+    }
+    return false;
+}
+// =========================================================================== //
+fn export_names() void {
+    if (trace_buffer_size > 0) {
+        tr.export_trace();
+    }
+    if (collector_buffer_size > 0) {
+        tr.export_collector();
+    }
+}

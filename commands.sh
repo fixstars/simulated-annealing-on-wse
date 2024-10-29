@@ -1,18 +1,21 @@
 #!/bin/sh
 set -eu
 print_help() {
-    echo "usage: commands.sh [-r] [-h] [-c config_path]"
+    echo "usage: commands.sh [-r] [-h] [-c config_path] [-o out_dir]"
     echo "    options:"
     echo "        -r                run in real environment"
     echo "        -c config_path    set config file(TOML) path"
+    echo "        -o out_dir        set output directory"
     echo "        -h                show this help message and exit"
 }
 run_env=simurator
 config_path=src/config.toml
-while getopts rhc: OPT; do
+out_dir=out
+while getopts rhc:o: OPT; do
     case $OPT in
         r) run_env=real;;
         c) config_path=$OPTARG;;
+        o) out_dir=$OPTARG;;
         h) print_help; exit 0;;
         *) echo "unkown option $OPT"; print_help; exit 1;;
     esac
@@ -33,10 +36,13 @@ if ! singularity exec instance://cerebras python -c "import tomli" >/dev/null 2>
 fi
 if [ $run_env = "real" ]; then
     singularity exec instance://cerebras python src/build.py \
-        --name out --config "$config_path" --real
-    flock /tmp/run_cs2.lock singularity exec instance://cerebras python src/run.py \
-        --name out --config "$config_path" --cmaddr 192.168.0.199:9000
+        --name "$out_dir" --config "$config_path" --real
+    flock /mnt/Pure_CustomerVol3/run_cs2.lock \
+        singularity exec instance://cerebras python src/run.py \
+        --name "$out_dir" --config "$config_path" --cmaddr 192.168.0.199:9000
 else
-    singularity exec instance://cerebras python src/build.py --name out --config "$config_path"
-    singularity exec instance://cerebras python src/run.py --name out --config "$config_path"
+    singularity exec instance://cerebras python src/build.py \
+        --name "$out_dir" --config "$config_path"
+    singularity exec instance://cerebras python src/run.py \
+        --name "$out_dir" --config "$config_path"
 fi

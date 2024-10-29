@@ -7,12 +7,12 @@ Docker image for cerebras
 Please place the tar.gz of the Cerebras SDK in this directory under the name `Cerebras-SDK.tar.gz`.
 
 ```console
-cd /path/to/cerebras_docker
+$ cd /path/to/cerebras_docker
 # Double quotes are required.
-wget "[Cerebras-SDK Download Full Path]" -O Cerebras-SDK.tar.gz
+$ wget "[Cerebras-SDK Download Full Path]" -O Cerebras-SDK.tar.gz
 ```
 
-```console
+```text
 cerebras_docker
 ├── Cerebras-SDK.tar.gz  <-- Here
 ├── Dockerfile
@@ -22,7 +22,7 @@ cerebras_docker
 
 Then, build the Docker image by `build.sh`
 
-```console
+```sh
 ./build.sh
 ```
 
@@ -32,7 +32,7 @@ Then, build the Docker image by `build.sh`
 
 Please set `AMPLIFY_TOKEN` environment.
 
-```console
+```sh
 ./run_cerebras.sh
 ```
 
@@ -40,15 +40,15 @@ Please set `AMPLIFY_TOKEN` environment.
 
 Please set `AMPLIFY_TOKEN` environment.
 
-```console
+```sh
 ./exec_cerebras_sa.sh
 ```
 
 ### run docker image without cerebras_sa (optional)
 
 ```console
-cd /path/to/cerebras_docker
-docker run -it --privileged --rm --name cerebras cerebras:${USER}
+$ cd /path/to/cerebras_docker
+$ docker run -it --privileged --rm --name cerebras cerebras:${USER}
 ```
 
 ## Visualize
@@ -70,7 +70,7 @@ Please change `cerebras_sa/config/small.toml` to the following diff.
 
 ```console
 # run cerebras_sa in debug mode ( suppress_simfab_trace = false)
-./exec_cerebras_sa.sh
+$ ./exec_cerebras_sa.sh
 # start visualizer
-./visualize_cerebras_sa.sh
+$ ./visualize_cerebras_sa.sh
 ```

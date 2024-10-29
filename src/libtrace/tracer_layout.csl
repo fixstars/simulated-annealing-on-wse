@@ -1,0 +1,7 @@
+const tr = @import_module("libtrace/internal/tracerImpl.csl");
+const COLLECT_INFO_NUM = tr.COLLECT_INFO_NUM;
+
+fn init() void {
+    @export_name("trace_buffer", [*]u16, false);
+    @export_name("collector_buffer", [*]f32, false);
+}

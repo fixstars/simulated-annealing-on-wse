@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cerebras SA analytics</title>
+    <style>
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 20px;
+        }
+        .svg-item img {
+            display: block;
+            /* max-width: 100%; */
+            height: auto;
+        }
+        .error {
+            color: red;
+            display: none;
+        }
+        select {
+            font-size: 1.5em;
+            padding: 10px;
+            width: auto;
+        }
+    </style>
+</head>
+<body>
+    <h1>Cerebras-SA analytics</h1>
+    <div class="container">
+        <select id="svgSelector">
+            <option value="statistics.svg">statistics.svg</option>
+            <option value="statistics_all_iteration.svg">statistics_all_iteration.svg</option>
+            <option value="timeline.svg">timeline.svg</option>
+        </select>
+        <div class="svg-item">
+            <img id="svgImage" src="statistics.svg" width="2000px">
+            <p id="errorMessage" class="error">SVG file not found.</p>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('svgSelector').addEventListener('change', function() {
+            var selectedValue = this.value;
+            var svgImage = document.getElementById('svgImage');
+            var errorMessage = document.getElementById('errorMessage');
+
+            svgImage.onload = function() {
+                errorMessage.style.display = 'none';
+            }
+            svgImage.onerror = function() {
+                errorMessage.style.display = 'block';
+                svgImage.style.display = 'none';
+            }
+            svgImage.style.display = 'block';
+            svgImage.src = selectedValue;
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,76 @@
+param trace_buffer_size: comptime_int = 0;
+param collector_buffer_size: comptime_int = 0;
+
+// =========================================================================== //
+//                                    TRACE                                    //
+// =========================================================================== //
+const types = @import_module("<math/type_helpers>");
+const ts = @import_module("<time>");
+
+var trace_buffer = @zeros([trace_buffer_size]u16);
+const trace_buffer_ptr : [*]u16 = &trace_buffer;
+var trace_buffer_index : u16 = 0;
+
+fn trace_u16(comptime x: u16) void {
+    const T = @type_of(x);
+    if (trace_buffer_index + types.word_size_of(T) <= trace_buffer_size) {
+        const ptr = @ptrcast(*T, &trace_buffer[trace_buffer_index]);
+        ptr.* = x;
+        trace_buffer_index += types.word_size_of(T);
+    }
+}
+
+var timer_initialized = false;
+fn trace_init() void {
+    if (!timer_initialized) {
+        ts.enable_tsc();
+        timer_initialized = true;
+    }
+}
+fn trace_timestamp() void {
+    if (trace_buffer_index + 3 <= trace_buffer_size) {
+        ts.get_timestamp(@ptrcast(*[3]u16, &trace_buffer[trace_buffer_index]));
+        trace_buffer_index += 3;
+    }
+}
+
+fn measure(comptime measure_point_id: u16) void {
+    if (trace_buffer_index + 4 <= trace_buffer_size) {
+        if (!timer_initialized) {
+            trace_init();
+        }
+        trace_u16(measure_point_id);
+        trace_timestamp();
+    }
+}
+
+// =========================================================================== //
+//                                  COLLECTOR                                  //
+// =========================================================================== //
+/// statistics(4): temperature, energy, do_flip_cnt, current_iteration_num
+const COLLECT_INFO_NUM = 4;
+var collector_buffer = @zeros([collector_buffer_size]f32);
+const collector_buffer_ptr : [*]f32 = &collector_buffer;
+var collector_buffer_index: u16 = 0;
+
+fn can_collect() bool {
+    return collector_buffer_index + COLLECT_INFO_NUM <= collector_buffer_size;
+}
+
+fn collect(statistics_data: *[COLLECT_INFO_NUM]f32) bool {
+    if (can_collect()) {
+        for (@range(u16, COLLECT_INFO_NUM)) |i| {
+            collector_buffer[collector_buffer_index + i] = (statistics_data.*)[i];
+        }
+        collector_buffer_index += COLLECT_INFO_NUM;
+        return true;
+    }
+    return false;
+}
+// =========================================================================== //
+fn export_trace() void {
+    @export_symbol(trace_buffer_ptr, "trace_buffer");
+}
+fn export_collector() void {
+    @export_symbol(collector_buffer_ptr, "collector_buffer");
+}

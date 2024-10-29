@@ -13,7 +13,7 @@ options:
 
 ## Example
 
-```shell
+```console
 $ ./run_amplify.py
 Input access token : # XXXXXXXXXXXXX
 inputs = [ 0.5479121  -0.12224312  0.71719587  0.39473605 -0.8116453   0.9512447

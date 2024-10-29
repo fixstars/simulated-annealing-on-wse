@@ -1,0 +1,20 @@
+[params]
+Num = 50
+block_height = 2
+block_width = 2
+grid_height = 4
+grid_width = 4
+max_iters = 512
+log2_swap_interval = 5 # 2^5=32
+time_constant = 1000
+log_init_temperature = 32768 # exp((32768 - 32768) / 256) = 1
+[trace] # 0 : disable, otherwise : enable
+  [trace.tracer]
+  trace_buffer_size = 0
+  [trace.collector]
+  iterations_per_collect = 8
+  collector_buffer_size = 128 # ⌈ 512 / (2 * 8) ⌉ * 4 = 128
+[sdk]
+suppress_simfab_trace = true
+[test]
+directory = "test/data50"

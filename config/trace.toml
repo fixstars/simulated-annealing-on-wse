@@ -1,20 +1,20 @@
 [params]
-Num = 8
-block_height = 2
-block_width = 2
-grid_height = 4
-grid_width = 4
-max_iters = 128
-log2_swap_interval = 32 # disable (2^32 > 128)
+Num = 6
+block_height = 3
+block_width = 3
+grid_height = 1
+grid_width = 2
+max_iters = 32
+log2_swap_interval = 3 # 32 / 2^3 = 4 tempering
 time_constant = 2500
 log_init_temperature = 33357 # exp((33357 - 32768) / 256) ≒ 9.98
 [trace] # 0 : disable, otherwise : enable
   [trace.tracer]
-  trace_buffer_size = 0
+  trace_buffer_size = 2500
   [trace.collector]
   iterations_per_collect = 0
   collector_buffer_size = 0
 [sdk]
 suppress_simfab_trace = true
 [test]
-directory = "test/sample8"
+directory = "test/trace6"

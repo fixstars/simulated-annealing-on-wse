@@ -1,3 +1,0 @@
-fn init() void {
-    @export_name("measure_buffer", [*]u16, false);
-}

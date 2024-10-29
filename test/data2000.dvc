@@ -1,0 +1,6 @@
+outs:
+- md5: 2ddbb1cad0cf93a1f8b6f824961b1d04.dir
+  size: 8012392
+  nfiles: 3
+  hash: md5
+  path: data2000

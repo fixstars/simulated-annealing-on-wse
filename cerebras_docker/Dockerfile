@@ -7,8 +7,8 @@ ARG GID=1000
 RUN sed -i.bak -e "s%mirror://[^ ]\+%http://ftp.jaist.ac.jp/pub/Linux/ubuntu/%g" /etc/apt/sources.list
 
 # add new sudo user
-ENV USER cerebras
-ENV HOME /home/$USER
+ENV USER=cerebras
+ENV HOME=/home/$USER
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -yq \
         wget curl git build-essential vim sudo lsb-release locales bash-completion tzdata gosu \
@@ -49,17 +49,15 @@ RUN cd $HOME && \
     cd $HOME && \
     rm singularity-ce-${VERSION}.tar.gz
 # Install Cerebras
-COPY Cerebras-SDK.tar.gz $HOME/Cerebras-SDK.tar.gz
-RUN cd $HOME && \
+RUN --mount=type=bind,source=Cerebras-SDK.tar.gz,target=Cerebras-SDK.tar.gz cd $HOME && \
     mkdir cs_sdk && \
     tar -C cs_sdk -xzvf Cerebras-SDK.tar.gz && \
-    rm Cerebras-SDK.tar.gz && \
     cd cs_sdk && \
     sha256sum --check sha256sum.txt
-# Install Amplify and dep packages
-RUN pip3 install amplify numpy
+# Install python dep packages
+RUN pip3 install --no-warn-script-location amplify lxml matplotlib numpy tqdm dvc[gdrive]
 
 ENV GOPATH="$HOME/go"
-ENV PATH="$HOME/cs_sdk:/usr/local/go/bin:$PATH:$GOPATH/bin"
+ENV PATH="$HOME/cs_sdk:/usr/local/go/bin:$PATH:$GOPATH/bin:$HOME/.local/bin"
 
 CMD ["/bin/bash"]
